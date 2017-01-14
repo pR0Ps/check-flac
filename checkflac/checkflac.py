@@ -108,9 +108,9 @@ class ValidatorBase(object):
 
     def validate_number_metadata(self):
         # Check for invalid [type]TOTAL metadata
-        if self.__class__ is Album:
+        if isinstance(self, Album):
             tag = "DISC"
-        elif self.__class__ is Disc:
+        elif isinstance(self, Disc):
             tag = "TRACK"
         else:
             raise AssertionError()
@@ -179,9 +179,9 @@ class ValidatorBase(object):
 
     @property
     def children(self):
-        if self.__class__ is Album:
+        if isinstance(self, Album):
             return self.discs
-        elif self.__class__ is Disc:
+        elif isinstance(self, Disc):
             return self.tracks
         else:
             return None
