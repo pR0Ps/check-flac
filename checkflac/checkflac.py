@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 """
 Script to validate certain conventions of FLAC releases
@@ -16,26 +16,28 @@ Checks:
 
  - The extra info:
    - checks if a cue and log file are provided at the disc level
-   - [TODO] check a cover image is provided at the album level
+   - checks a cover image is provided at the album level
+   - checks if an m3u file shoudl be deleted
    - [TODO] check a folder with additional art is provided at the album level
 
- - The folders:
+ - The folder/file names:
    - [TODO] validate a naming scheme
+   - [TODO] validate the name against vorbis information
 
  - vorbis information:
    - album, date, albumartist, and disctotal are at the album level
    - discnumber, tracktotal are at the disc level
    - artist, tracknumber, title are at the track level
-   - checks for totaldiscs and totaltraks metadata
+   - checks for totaldiscs and totaltracks metadata
    - checks that disctotal is equal to the amount of discs
    - checks that tracktotal is equal to the number of tracks
+   - checks for duplicate tags
    - [TODO] warn if TRACKNUMBER is the "tracknum/totaltracks" style
    - [TODO] warn if album art is embedded
-   - [TODO] warn about duplicate tags
 
  - replaygain information:
-   - reference loudness, album gain, album peak are at the disc level
-   - track gain and track peak are at the track level
+   - checks reference loudness, album gain, album peak are at the disc level
+   - checks track gain and track peak are at the track level
 """
 
 import argparse
@@ -46,6 +48,7 @@ import os
 import taglib
 
 MAX_PATH_LENGTH = 180
+COVER_FILENAME = "cover.jpg"
 REQUIRED_TAGS_ALBUM = {"ALBUM", "DATE", "ALBUMARTIST", "DISCTOTAL"}
 REQUIRED_TAGS_DISC = {"DISCNUMBER", "TRACKTOTAL"}
 REQUIRED_TAGS_TRACK = {"ARTIST", "TRACKNUMBER", "TITLE"}
@@ -54,68 +57,130 @@ REPLAYGAIN_TAGS_DISC = {"REPLAYGAIN_REFERENCE_LOUDNESS", "REPLAYGAIN_ALBUM_GAIN"
 REPLAYGAIN_TAGS_TRACK = {"REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_TRACK_PEAK"}
 
 
-def all_same(lst):
-    """More than 1, all the same and not None"""
-    if not lst:
-        return False
-    f = lst[0]
-    if f is None:
-        return False
-    return all(f == x for x in lst)
-
-
 def has_ext(path, ext):
     return path.rsplit(".", 1)[-1].lower() == ext.lower()
 
 
-def single_file(files, ext):
-    temp = [x for x in files if has_ext(x, ext)]
-    if len(temp) > 1:
-        print("More than 1 '*.{}' file found".format(ext))
-        return None
-    return temp[0] if temp else None
+def files_by_ext(files, ext):
+    return [x for x in files if has_ext(x, ext)]
 
 
-class Album(object):
+class ValidatorBase(object):
 
-    def __init__(self, album_dir):
-        # Remove trailing slashes (can cause problems with os.path.dirname)
-        album_dir = album_dir.rstrip("/")
+    def validate_all_same(self, tag):
+        temp = self.get_tag(tag, placeholder=True)
+        tags = set(temp)
+        if None in tags:
+            tags.remove(None)
+            if len(tags) == 0:
+                print("Problem with {}-level tag {} - missing from all items".format(self.level, tag))
+                return
+            else:
+                print("Problem with {}-level tag {} - missing from {}/{} items"
+                      "".format(self.level, tag, temp.count(None), len(temp)))
+        if len(tags) > 1:
+            print("Problem with {}-level tag {} - multiple values: {}".format(self.level, tag, tags))
 
-        if not os.path.isdir(album_dir):
-            raise FileNotFoundError("Directory '{}' does not exist".format(album_dir))
+    def validate_number_metadata(self):
+        # Check for invalid [type]TOTAL metadata
+        if self.__class__ is Album:
+            tag = "DISC"
+        elif self.__class__ is Disc:
+            tag = "TRACK"
+        else:
+            raise AssertionError()
 
-        album_dir = os.path.abspath(album_dir)
+        total_bad_tag = "TOTAL{}S".format(tag)
+        total_good_tag = "{}TOTAL".format(tag)
+        number_tag = "{}NUMBER".format(tag)
+        tag = tag.lower()
 
-        self.directory = album_dir
-        self.parent_dir = os.path.dirname(album_dir)
-        self.name = os.path.basename(album_dir)
+        # Check for the wrong tag information ([type]TOTAL > TOTAL[types]S)
+        if self.get_tag(total_bad_tag):
+            if self.get_tag(total_good_tag):
+                print("{} tags detected, delete them ({} tag already exists)"
+                      "".format(total_bad_tag, total_good_tag))
+            else:
+                print("{} tags detected, convert them to {} tags"
+                      "".format(total_bad_tag, total_good_tag))
+
+        # Check [type]TOTAL = number of [type]s
+        temp = self.get_tag(total_good_tag)
+        if temp and len(set(temp)) == 1:
+            try:
+                total = int(temp[0])
+            except (ValueError, TypeError):
+                print("Problem with {} tag (non-numeric)".format(total_good_tag))
+            else:
+                if total != len(self.children):
+                    print("Problem with {0} tag (found {2} {1}s, {0}={3})"
+                          "".format(total_good_tag, tag, len(self.children), total))
+
+        # Check [type] sort order
+        numbers = self.get_tag(number_tag)
+        if numbers:
+            try:
+                numbers = [int(x) for x in numbers]
+            except (ValueError, TypeError):
+                print("WARNING: Not checking {} sort order ({} metadata is non-numeric)"
+                      "".format(tag, number_tag))
+            else:
+                if sorted(numbers) != numbers:
+                    print("{}s do not sort properly according to the {} metadata"
+                          "".format(tag.title(), number_tag))
+
+    def get_tag(self, tag_name, placeholder=False):
+        if self.children is None:
+            # No children to search through, return the tag
+            if tag_name in self.tags:
+                tag = self.tags[tag_name]
+
+                # Check for duplicate tags
+                num_tags = len(tag)
+                if num_tags > 1:
+                    print("Multiple '{}' tags ({})".format(tag_name, num_tags))
+                return [tag[0]]
+            if placeholder:
+                return [None]
+            else:
+                return []
+
+        return list(itertools.chain.from_iterable(x.get_tag(tag_name, placeholder)
+                                                  for x in self.children))
+
+    @property
+    def level(self):
+        return self.__class__.__name__.lower()
+
+    @property
+    def children(self):
+        if self.__class__ is Album:
+            return self.discs
+        elif self.__class__ is Disc:
+            return self.tracks
+        else:
+            return None
+
+
+class Album(ValidatorBase):
+
+    def __init__(self, directory):
+        self.directory = os.path.abspath(directory)
+
+        if not os.path.isdir(self.directory):
+            raise FileNotFoundError("Directory '{}' does not exist".format(self.directory))
+
+        self.parent_dir = os.path.dirname(self.directory)
+        self.name = os.path.basename(self.directory)
         self.discs = self._find_discs()
 
     def validate(self):
         print("Validating album: {}".format(self.name))
 
         for tag in REQUIRED_TAGS_ALBUM:
-            if not all_same(self.get_tags(tag)):
-                print("Problem with album-level tag {} (missing/not all the same)".format(tag))
+            self.validate_all_same(tag)
 
-        # Check TOTALDISCS doesn't exist
-        if self.get_tags("TOTALDISCS"):
-            if self.get_tags("DISCTOTAL"):
-                print ("TOTALDISCS tags detected, delete them (DISCTOTAL tag already exists)")
-            else:
-                print ("TOTALDISCS tags detected, convert them to DISCTOTAL")
-
-        # Check DISCTOTAL = number of discs
-        temp = self.get_tags("DISCTOTAL")
-        if temp:
-            try:
-                total_discs = int(temp[0])
-            except ValueError:
-                print("Problem with DISCTOTAL tag (non-numeric)")
-            else:
-                if total_discs != len(self.discs):
-                    print("Problem with DISCTOTAL tag (incorrect number of discs)")
+        self.validate_number_metadata()
 
         # Validate individual discs
         for d in self.discs:
@@ -128,21 +193,19 @@ class Album(object):
                 continue
 
             ret.append(Disc(self, dirpath, files))
-        return ret
 
-    def get_tags(self, tag_name):
-        return list(itertools.chain.from_iterable(d.get_tags(tag_name)
-                                                  for d in self.discs))
+        return sorted(ret, key=lambda x: x.name)
 
 
-class Disc(object):
+class Disc(ValidatorBase):
 
     def __init__(self, album, directory, files):
         self.album = album
         self.directory = directory
-        self.tracks = self._find_tracks(files)
-        self.log = single_file(files, "log")
-        self.cue = single_file(files, "cue")
+
+        # Sort the files by name to later validate they sort correctly by tracknumber
+        self.files = sorted(files)
+        self.tracks = self._find_tracks()
 
         if directory != self.album.directory:
             self.name = os.path.basename(directory)
@@ -155,60 +218,42 @@ class Disc(object):
         else:
             print("Validating the only disc")
 
-        if not self.log:
-            print("No log file found!")
-        if not self.cue:
-            print("No cue file found!")
+        # Check album art is present
+        if COVER_FILENAME not in self.files:
+            print("No cover art found (looking for '{}')".format(COVER_FILENAME))
+
+        # Check cue and log files are present
+        for x in ("cue", "log"):
+            f = files_by_ext(self.files, x)
+            if not f:
+                print("No *.{} file found".format(x))
+            elif len(f) > 1:
+                print("Multiple *.{} files found".format(x))
+
+        # Check if m3u files are present
+        for x in ("m3u", "m3u8"):
+            if files_by_ext(self.files, x):
+                print("*.{} file detected - delete it".format(x))
 
         for tag in REQUIRED_TAGS_DISC:
-            if not all_same(self.get_tags(tag)):
-                print("Problem with disc-level tag {} (missing/not all the same)".format(tag))
+            self.validate_all_same(tag)
 
         for tag in REPLAYGAIN_TAGS_DISC:
-            if not all_same(self.get_tags(tag)):
-                # To fix replaygain: `metaflac --add-replay-gain <all files from disc>`
-                print("Problem with disc-level replaygain tag {} (missing/not all the same)".format(tag))
+            # To fix replaygain: `metaflac --add-replay-gain <all files from disc>`
+            self.validate_all_same(tag)
 
-        # Check TOTALTRACKS doesn't exist
-        if self.get_tags("TOTALTRACKS"):
-            if self.get_tags("TRACKTOTAL"):
-                print ("TOTALTRACKS tags detected, delete them (TRACKTOTAL tag already exists)")
-            else:
-                print ("TOTALTRACKS tags detected, convert them to TRACKTOTAL")
-
-        # Check number of tracks = TRACKTOTAL
-        tracknumbers = self.get_tags("TRACKNUMBER")
-        temp_tracks = self.get_tags("TRACKTOTAL")
-        if tracknumbers and temp_tracks:
-            num_tracks = len(tracknumbers)
-            total_tracks = int(temp_tracks[0])
-            if num_tracks != total_tracks:
-                print("Different number of TRACKNUMBERs than TRACKTOTAL")
-
-            # Check sort order (TODO: padding + possible letters)
-            try:
-                tracknumbers = [int(x) for x in tracknumbers]
-            except TypeError:
-                print("WARNING: Not checking sort order (tracknumbers are non-numeric in metadata)")
-            else:
-                if sorted(tracknumbers) != tracknumbers:
-                    print("Files do not sort properly according to the tracknumber metadata")
+        self.validate_number_metadata()
 
         # Validate individual tracks
         for t in self.tracks:
             t.validate()
 
-    def _find_tracks(self, files):
-        # Sort the files by name to later validate they sort correctly by tracknumber too
+    def _find_tracks(self):
         return [Track(self, os.path.join(self.directory, x))
-                for x in sorted(files) if has_ext(x, "flac")]
-
-    def get_tags(self, tag_name):
-        return list(itertools.chain.from_iterable(t.get_tags(tag_name)
-                                                  for t in self.tracks))
+                for x in self.files if has_ext(x, "flac")]
 
 
-class Track(object):
+class Track(ValidatorBase):
 
     def __init__(self, disc, path):
         self.disc = disc
@@ -221,11 +266,11 @@ class Track(object):
         print("Validating track: {}".format(self.name))
 
         for tag in REQUIRED_TAGS_TRACK:
-            if not self.get_tags(tag):
+            if not self.get_tag(tag):
                 print("Problem with track-level tag {} (missing/blank)".format(tag))
 
         for tag in REPLAYGAIN_TAGS_TRACK:
-            if not self.get_tags(tag):
+            if not self.get_tag(tag):
                 print("Problem with track-level replaygain tag {} (missing/blank)".format(tag))
 
         # Ensure the total path length is ok
@@ -241,17 +286,6 @@ class Track(object):
             print("Failed to verify FLAC file - it may be corrupt")
 
         # TODO: Make sure there's no embedded album art
-
-    def get_tags(self, tag_name):
-        if tag_name in self.tags:
-            tag = self.tags[tag_name]
-
-            # Check for duplicate tags
-            num_tags = len(tag)
-            if num_tags > 1:
-                print("Multiple '{}' tags ({})".format(tag_name, num_tags))
-            return [tag[0]]
-        return list()
 
 
 def main():
