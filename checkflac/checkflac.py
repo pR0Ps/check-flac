@@ -22,6 +22,8 @@ Checks:
 
  - The folder/file names:
    - [TODO] validate a naming scheme
+     - folder: [<ALBUMARTIST> - ]<ALBUM> (<YEAR>) \[{CD,WEB}-FLAC\] {<anything}}
+     - file: <TRACKNUMBER> - [<ARTIST> - ]<TITLE>.flac
    - [TODO] validate the name against vorbis information
 
  - vorbis information:
@@ -41,6 +43,7 @@ Checks:
 """
 
 import argparse
+import enum
 import itertools
 import subprocess
 import os
@@ -65,21 +68,43 @@ def files_by_ext(files, ext):
     return [x for x in files if has_ext(x, ext)]
 
 
+class Missing(enum.Enum):
+    NONE = 0
+    SOME = 1
+    ALL = 2
+
 class ValidatorBase(object):
 
-    def validate_all_same(self, tag):
+    def _check_all_same(self, tag):
+        """Check and generate messages but don't print them
+
+        returns (missing code, multiple, msg)
+        """
+        code = Missing.NONE
+        multiple = False
+        msgs = []
+
         temp = self.get_tag(tag, placeholder=True)
         tags = set(temp)
         if None in tags:
             tags.remove(None)
             if len(tags) == 0:
-                print("Problem with {}-level tag {} - missing from all items".format(self.level, tag))
-                return
+                code = Missing.ALL
+                msgs.append("missing from all items")
             else:
-                print("Problem with {}-level tag {} - missing from {}/{} items"
-                      "".format(self.level, tag, temp.count(None), len(temp)))
+                code = Missing.SOME
+                msgs.append("missing from {}/{} items".format(temp.count(None),
+                                                             len(temp)))
         if len(tags) > 1:
-            print("Problem with {}-level tag {} - multiple values: {}".format(self.level, tag, tags))
+            multiple = True
+            msgs.append("multiple values: {}".format(tags))
+
+        return code, multiple, msgs
+
+    def validate_all_same(self, tag):
+        code, multiple, msgs = self._check_all_same(tag)
+        if code != Missing.NONE or multiple:
+            print("Problem with tag {}: {}".format(tag, ", ".join(msgs)))
 
     def validate_number_metadata(self):
         # Check for invalid [type]TOTAL metadata
