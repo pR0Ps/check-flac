@@ -34,6 +34,7 @@ Checks:
    - checks that disctotal is equal to the amount of discs
    - checks that tracktotal is equal to the number of tracks
    - checks for duplicate tags
+   - check the COMPILATION tag
    - [TODO] warn if TRACKNUMBER is the "tracknum/totaltracks" style
    - [TODO] warn if album art is embedded
 
@@ -52,6 +53,7 @@ import taglib
 
 MAX_PATH_LENGTH = 180
 COVER_FILENAME = "cover.jpg"
+VARIOUS_ARTISTS = "Various Artists"
 REQUIRED_TAGS_ALBUM = {"ALBUM", "DATE", "ALBUMARTIST", "DISCTOTAL"}
 REQUIRED_TAGS_DISC = {"DISCNUMBER", "TRACKTOTAL"}
 REQUIRED_TAGS_TRACK = {"ARTIST", "TRACKNUMBER", "TITLE"}
@@ -103,6 +105,11 @@ class ValidatorBase(object):
 
     def validate_all_same(self, tag):
         code, multiple, msgs = self._check_all_same(tag)
+
+        # Special case hint for blank ALBUMARTIST
+        if tag == "ALBUMARTIST" and isinstance(self, Album) and code == Missing.ALL:
+            msgs[-1] += " (is this a compilation?)"
+
         if code != Missing.NONE or multiple:
             print("Problem with tag {}: {}".format(tag, ", ".join(msgs)))
 
@@ -199,6 +206,23 @@ class Album(ValidatorBase):
         self.name = os.path.basename(self.directory)
         self.discs = self._find_discs()
 
+    def validate_compilation(self):
+        """Validate the relationship between ALBUMARTIST and COMPILATION"""
+        compilation = set(self.get_tag("COMPILATION"))
+        missing, multiple, _ = self._check_all_same("COMPILATION")
+        if missing == Missing.SOME and (multiple or "1" not in compilation):
+            print("Invalid COMPILATION tag: must be \"1\" or unset")
+            return
+
+        # At this point, the compilation tag is either not there or correct
+        artist = set(self.get_tag("ALBUMARTIST"))
+        if not compilation:
+            if artist and len(artist) == 1 and VARIOUS_ARTISTS in artist:
+                print("ALBUMARTIST is '{}' but COMPILATION is not set".format(VARIOUS_ARTISTS))
+        elif not artist:
+            print("ALBUMARTIST is unset and COMPILATION is - set ALBUMARTIST to '{}'".format(VARIOUS_ARTISTS))
+
+
     def validate(self):
         print("Validating album: {}".format(self.name))
 
@@ -206,6 +230,7 @@ class Album(ValidatorBase):
             self.validate_all_same(tag)
 
         self.validate_number_metadata()
+        self.validate_compilation()
 
         # Validate individual discs
         for d in self.discs:
