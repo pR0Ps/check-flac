@@ -45,6 +45,7 @@ Checks:
 
 import argparse
 import enum
+import functools
 import itertools
 import os
 import subprocess
@@ -54,12 +55,6 @@ import taglib
 MAX_PATH_LENGTH = 180
 COVER_FILENAME = "cover.jpg"
 VARIOUS_ARTISTS = "Various Artists"
-REQUIRED_TAGS_ALBUM = {"ALBUM", "DATE", "ALBUMARTIST", "DISCTOTAL"}
-REQUIRED_TAGS_DISC = {"DISCNUMBER", "TRACKTOTAL"}
-REQUIRED_TAGS_TRACK = {"ARTIST", "TRACKNUMBER", "TITLE"}
-REPLAYGAIN_TAGS_DISC = {"REPLAYGAIN_REFERENCE_LOUDNESS", "REPLAYGAIN_ALBUM_GAIN",
-                        "REPLAYGAIN_ALBUM_PEAK"}
-REPLAYGAIN_TAGS_TRACK = {"REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_TRACK_PEAK"}
 
 
 def has_ext(path, ext):
@@ -70,6 +65,18 @@ def files_by_ext(files, ext):
     return [x for x in files if has_ext(x, ext)]
 
 
+def validator(func):
+    """Calls the pre_validate and post_validate functions before and after the
+    wrapped function"""
+    @functools.wraps(func)
+    def wrapped(self):
+        self.pre_validate()
+        func(self)
+        self.post_validate()
+
+    return wrapped
+
+
 class Missing(enum.Enum):
     NONE = 0
     SOME = 1
@@ -77,6 +84,9 @@ class Missing(enum.Enum):
 
 
 class ValidatorBase(object):
+
+    REQUIRED_TAGS = {}
+    REPLAYGAIN_TAGS = {}
 
     def _check_all_same(self, tag):
         """Check and generate messages but don't print them
@@ -112,7 +122,11 @@ class ValidatorBase(object):
             msgs[-1] += " (is this a compilation?)"
 
         if code != Missing.NONE or multiple:
-            print("Problem with tag {}: {}".format(tag, ", ".join(msgs)))
+            if isinstance(self, Track):
+                # Track can't have multiple values
+                print("Problem with tag {}: missing".format(tag))
+            else:
+                print("Problem with tag {}: {}".format(tag, ", ".join(msgs)))
 
     def validate_number_metadata(self):
         # Check for invalid [type]TOTAL metadata
@@ -121,7 +135,8 @@ class ValidatorBase(object):
         elif isinstance(self, Disc):
             tag = "TRACK"
         else:
-            raise AssertionError()
+            # Nothing to do for tracks
+            return
 
         total_bad_tag = "TOTAL{}S".format(tag)
         total_good_tag = "{}TOTAL".format(tag)
@@ -161,6 +176,34 @@ class ValidatorBase(object):
                 if sorted(numbers) != numbers:
                     print("{}s do not sort properly according to the {} metadata"
                           "".format(tag.title(), number_tag))
+
+    def validate_metadata_structure(self):
+        for tag in self.REQUIRED_TAGS:
+            self.validate_all_same(tag)
+
+    def validate_replaygain(self):
+        # To fix replaygain: `metaflac --add-replay-gain <all files from disc>`
+        for tag in self.REPLAYGAIN_TAGS:
+            self.validate_all_same(tag)
+
+    def pre_validate(self):
+        if self.name is None:
+            print("Validating the only {}".format(self.level))
+        else:
+            print("Validating {}: {}".format(self.level, self.name))
+
+        self.validate_metadata_structure()
+        self.validate_replaygain()
+        self.validate_number_metadata()
+
+    @validator
+    def validate():
+        pass
+
+    def post_validate(self):
+        if self.children is not None:
+            for x in self.children:
+                x.validate()
 
     def get_tag(self, tag_name, placeholder=False):
         if self.children is None:
@@ -204,6 +247,8 @@ class ValidatorBase(object):
 
 class Album(ValidatorBase):
 
+    REQUIRED_TAGS = {"ALBUM", "DATE", "ALBUMARTIST", "DISCTOTAL"}
+
     def __init__(self, directory):
         self.directory = os.path.abspath(directory)
 
@@ -228,21 +273,11 @@ class Album(ValidatorBase):
             if artist == VARIOUS_ARTISTS:
                 print("ALBUMARTIST is '{}' but COMPILATION is not set".format(VARIOUS_ARTISTS))
         elif not artist:
-            print("COMPILATION is set but ALBUMARTIST isn't - set ALBUMARTIST to '{}'".format(VARIOUS_ARTISTS))
+            print("COMPILATION is set but ALBUMARTIST isn't - set ALBUMARTIST to '{}'?".format(VARIOUS_ARTISTS))
 
-
+    @validator
     def validate(self):
-        print("Validating album: {}".format(self.name))
-
-        for tag in REQUIRED_TAGS_ALBUM:
-            self.validate_all_same(tag)
-
-        self.validate_number_metadata()
         self.validate_compilation()
-
-        # Validate individual discs
-        for d in self.discs:
-            d.validate()
 
     def _find_discs(self):
         ret = []
@@ -257,6 +292,10 @@ class Album(ValidatorBase):
 
 class Disc(ValidatorBase):
 
+    REQUIRED_TAGS = {"DISCNUMBER", "TRACKTOTAL"}
+    REPLAYGAIN_TAGS = {"REPLAYGAIN_REFERENCE_LOUDNESS", "REPLAYGAIN_ALBUM_GAIN",
+                       "REPLAYGAIN_ALBUM_PEAK"}
+
     def __init__(self, album, directory, files):
         self.album = album
         self.directory = directory
@@ -270,12 +309,8 @@ class Disc(ValidatorBase):
         else:
             self.name = None
 
+    @validator
     def validate(self):
-        if self.name is not None:
-            print("Validating disc: {}".format(self.name))
-        else:
-            print("Validating the only disc")
-
         # Check album art is present
         if COVER_FILENAME not in self.files:
             print("No cover art found (looking for '{}')".format(COVER_FILENAME))
@@ -293,25 +328,15 @@ class Disc(ValidatorBase):
             if files_by_ext(self.files, x):
                 print("*.{} file detected - delete it".format(x))
 
-        for tag in REQUIRED_TAGS_DISC:
-            self.validate_all_same(tag)
-
-        for tag in REPLAYGAIN_TAGS_DISC:
-            # To fix replaygain: `metaflac --add-replay-gain <all files from disc>`
-            self.validate_all_same(tag)
-
-        self.validate_number_metadata()
-
-        # Validate individual tracks
-        for t in self.tracks:
-            t.validate()
-
     def _find_tracks(self):
         return [Track(self, os.path.join(self.directory, x))
                 for x in self.files if has_ext(x, "flac")]
 
 
 class Track(ValidatorBase):
+
+    REQUIRED_TAGS = {"ARTIST", "TRACKNUMBER", "TITLE"}
+    REPLAYGAIN_TAGS = {"REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_TRACK_PEAK"}
 
     def __init__(self, disc, path):
         self.disc = disc
@@ -320,23 +345,13 @@ class Track(ValidatorBase):
         self.song = taglib.File(path)
         self.tags = self.song.tags
 
+    @validator
     def validate(self):
-        print("Validating track: {}".format(self.name))
-
-        for tag in REQUIRED_TAGS_TRACK:
-            if not self.get_tag(tag):
-                print("Problem with track-level tag {} (missing/blank)".format(tag))
-
-        for tag in REPLAYGAIN_TAGS_TRACK:
-            if not self.get_tag(tag):
-                print("Problem with track-level replaygain tag {} (missing/blank)".format(tag))
-
         # Ensure the total path length is ok
         rel_path = os.path.relpath(self.path, start=self.disc.album.parent_dir)
         pathlen = len(rel_path)
         if pathlen > MAX_PATH_LENGTH:
             print("The path '{}' is too long ({} > {})".format(rel_path, pathlen, MAX_PATH_LENGTH))
-
 
         # TODO: Figure out the return code if the md5 doesn't exist vs is invalid
         if subprocess.call(["flac", "-ts", self.path]) != 0:
