@@ -46,8 +46,8 @@ Checks:
 import argparse
 import enum
 import itertools
-import subprocess
 import os
+import subprocess
 
 import taglib
 
@@ -74,6 +74,7 @@ class Missing(enum.Enum):
     NONE = 0
     SOME = 1
     ALL = 2
+
 
 class ValidatorBase(object):
 
@@ -130,17 +131,17 @@ class ValidatorBase(object):
         # Check for the wrong tag information ([type]TOTAL > TOTAL[types]S)
         if self.get_tag(total_bad_tag):
             if self.get_tag(total_good_tag):
-                print("{} tags detected, delete them ({} tag already exists)"
+                print("{} tag(s) detected, delete them ({} tag already exists)"
                       "".format(total_bad_tag, total_good_tag))
             else:
-                print("{} tags detected, convert them to {} tags"
+                print("{} tag(s) detected, convert them to {} tags"
                       "".format(total_bad_tag, total_good_tag))
 
         # Check [type]TOTAL = number of [type]s
-        temp = self.get_tag(total_good_tag)
-        if temp and len(set(temp)) == 1:
+        temp = self.get_valid_tag(total_good_tag)
+        if temp is not None:
             try:
-                total = int(temp[0])
+                total = int(temp)
             except (ValueError, TypeError):
                 print("Problem with {} tag (non-numeric)".format(total_good_tag))
             else:
@@ -170,7 +171,7 @@ class ValidatorBase(object):
                 # Check for duplicate tags
                 num_tags = len(tag)
                 if num_tags > 1:
-                    print("Multiple '{}' tags ({})".format(tag_name, num_tags))
+                    print("Found {} '{}' tags: {}".format(num_tags, tag_name, tag))
                 return [tag[0]]
             if placeholder:
                 return [None]
@@ -179,6 +180,13 @@ class ValidatorBase(object):
 
         return list(itertools.chain.from_iterable(x.get_tag(tag_name, placeholder)
                                                   for x in self.children))
+
+    def get_valid_tag(self, tag_name):
+        """Get a tag's valid if all children have the same valid (otherwise None)"""
+        tags = set(self.get_tag(tag_name))
+        if len(tags) == 1:
+            return next(iter(tags))
+        return None
 
     @property
     def level(self):
@@ -208,19 +216,19 @@ class Album(ValidatorBase):
 
     def validate_compilation(self):
         """Validate the relationship between ALBUMARTIST and COMPILATION"""
-        compilation = set(self.get_tag("COMPILATION"))
+        compilation = self.get_valid_tag("COMPILATION")
         missing, multiple, _ = self._check_all_same("COMPILATION")
-        if missing == Missing.SOME and (multiple or "1" not in compilation):
-            print("Invalid COMPILATION tag: must be \"1\" or unset")
+        if missing == Missing.SOME and (multiple or compilation != "1"):
+            print("Invalid COMPILATION tag: must all be set to \"1\" or unset")
             return
 
         # At this point, the compilation tag is either not there or correct
-        artist = set(self.get_tag("ALBUMARTIST"))
+        artist = self.get_valid_tag("ALBUMARTIST")
         if not compilation:
-            if artist and len(artist) == 1 and VARIOUS_ARTISTS in artist:
+            if artist == VARIOUS_ARTISTS:
                 print("ALBUMARTIST is '{}' but COMPILATION is not set".format(VARIOUS_ARTISTS))
         elif not artist:
-            print("ALBUMARTIST is unset and COMPILATION is - set ALBUMARTIST to '{}'".format(VARIOUS_ARTISTS))
+            print("COMPILATION is set but ALBUMARTIST isn't - set ALBUMARTIST to '{}'".format(VARIOUS_ARTISTS))
 
 
     def validate(self):
