@@ -114,12 +114,14 @@ class ValidatorBase(object):
 
         return code, multiple, msgs
 
+    def _get_tag_and_check(self, tag_name):
+        code, multiple, _ = self._check_all_same(tag_name)
+        if code == Missing.NONE and not multiple:
+            return self.get_valid_tag(tag_name), code, multiple
+        return None, code, multiple
+
     def validate_all_same(self, tag):
         code, multiple, msgs = self._check_all_same(tag)
-
-        # Special case hint for blank ALBUMARTIST
-        if tag == "ALBUMARTIST" and isinstance(self, Album) and code == Missing.ALL:
-            msgs[-1] += " (is this a compilation?)"
 
         if code != Missing.NONE or multiple:
             if isinstance(self, Track):
@@ -260,20 +262,29 @@ class Album(ValidatorBase):
         self.discs = self._find_discs()
 
     def validate_compilation(self):
-        """Validate the relationship between ALBUMARTIST and COMPILATION"""
-        compilation = self.get_valid_tag("COMPILATION")
-        missing, multiple, _ = self._check_all_same("COMPILATION")
-        if missing == Missing.SOME and (multiple or compilation != "1"):
-            print("Invalid COMPILATION tag: must all be set to \"1\" or unset")
-            return
+        """Validate the relationship between ARTIST, ALBUMARTIST and COMPILATION"""
+        # Validate compilation tag
+        compilation, c_missing, _ = self._get_tag_and_check("COMPILATION")
+        if not (c_missing == Missing.ALL or (c_missing == Missing.NONE and compilation == "1")):
+            print("Invalid COMPILATION tag: must all be set to '1' or unset")
 
-        # At this point, the compilation tag is either not there or correct
-        artist = self.get_valid_tag("ALBUMARTIST")
-        if not compilation:
-            if artist == VARIOUS_ARTISTS:
-                print("ALBUMARTIST is '{}' but COMPILATION is not set".format(VARIOUS_ARTISTS))
-        elif not artist:
-            print("COMPILATION is set but ALBUMARTIST isn't - set ALBUMARTIST to '{}'?".format(VARIOUS_ARTISTS))
+        # Blank ALBUMARTIST, same ARTIST
+        albumartist, aa_missing, _ = self._get_tag_and_check("ALBUMARTIST")
+        artist, a_missing, multiple_artists = self._get_tag_and_check("ARTIST")
+        if aa_missing == Missing.ALL and artist is not None:
+            print("ALBUMARTIST tag should be set to '{}' (is unset but ARTIST tags are all the same)".format(artist))
+
+        # same ARTISTS, different than ALBUMARTIST
+        if None not in (artist, albumartist) and artist != albumartist:
+            print("ALBUMARTIST is set to '{}' but all the ARTIST tags are '{}'".format(albumartist, artist))
+
+        # Different ARTISTs, not a compilation
+        if albumartist == VARIOUS_ARTISTS and compilation != "1":
+            print ("ALBUMARTIST is set to '{}' but COMPILATION is not set".format(VARIOUS_ARTISTS))
+
+        # Not a compilation, but different ARTISTS
+        if compilation != "1" and multiple_artists:
+            print("COMPILATION is not set but there are multiple different ARTISTs tags")
 
     @validator
     def validate(self):
@@ -352,6 +363,10 @@ class Track(ValidatorBase):
         pathlen = len(rel_path)
         if pathlen > MAX_PATH_LENGTH:
             print("The path '{}' is too long ({} > {})".format(rel_path, pathlen, MAX_PATH_LENGTH))
+
+        # Don't allow various artists in the ARTIST tag
+        if self.get_valid_tag("ARTIST") == VARIOUS_ARTISTS:
+            print ("Invalid ARTIST: can't be '{}' (use ALBUMARTIST instead)".format(VARIOUS_ARTISTS))
 
         # TODO: Figure out the return code if the md5 doesn't exist vs is invalid
         if subprocess.call(["flac", "-ts", self.path]) != 0:
