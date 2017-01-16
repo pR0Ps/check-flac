@@ -12,7 +12,6 @@ Checks:
  - The FLAC files:
    - checks that files aren't corrupted by verifying the STREAMINFO MD5
    - checks the path length of each file
-   - [TODO] recommed re-encoding to add the md5 if one doesn't exist
 
  - The extra info:
    - checks if a cue and log file are provided at the disc level
@@ -376,14 +375,13 @@ class Track(ValidatorBase):
             print ("Invalid ARTIST: can't be '{}' (use ALBUMARTIST instead)".format(VARIOUS_ARTISTS))
 
         if EXTERNALS["flac"]:
-            # TODO: Figure out the return code if the md5 doesn't exist vs is invalid
             # Verify flac MD5 information
-            if quiet_call(["flac", "-ts", self.path]) != 0:
+            if quiet_call(["flac", "--test", "--warnings-as-errors", self.path]) != 0:
                 # To fix no MD5: `flac --best -f <file>`
-                print("Failed to verify FLAC file - it may be corrupt")
+                print("Failed to verify FLAC file - it may be corrupt or not have an MD5 set")
 
-        # Make sure there's no embedded album art
         if EXTERNALS["metaflac"]:
+            # Make sure there's no embedded album art
             if quiet_call(["metaflac", "--export-picture-to=-", self.path]) == 0:
                 print("Album art is embedded - remove it and provide a high-res '{}' instead.".format(COVER_FILENAME))
 
