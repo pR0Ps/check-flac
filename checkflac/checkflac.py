@@ -51,15 +51,15 @@ import itertools
 import os
 import shutil
 import subprocess
+import sys
 
 import taglib
 
 MAX_PATH_LENGTH = 180
 COVER_FILENAME = "cover.jpg"
 VARIOUS_ARTISTS = "Various Artists"
+EXTERNALS = {x: bool(shutil.which(x)) for x in ("flac", "metaflac")}
 
-HAS_FLAC = bool(shutil.which("flac"))
-HAS_METAFLAC = bool(shutil.which("metaflac"))
 
 def has_ext(path, ext):
     return path.rsplit(".", 1)[-1].lower() == ext.lower()
@@ -79,6 +79,10 @@ def validator(func):
         self.post_validate()
 
     return wrapped
+
+
+quiet_call = functools.partial(subprocess.call, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
 
 
 class Missing(enum.Enum):
@@ -347,7 +351,6 @@ class Disc(ValidatorBase):
         return [Track(self, os.path.join(self.directory, x))
                 for x in self.files if has_ext(x, "flac")]
 
-
 class Track(ValidatorBase):
 
     REQUIRED_TAGS = {"ARTIST", "TRACKNUMBER", "TITLE"}
@@ -372,24 +375,29 @@ class Track(ValidatorBase):
         if self.get_valid_tag("ARTIST") == VARIOUS_ARTISTS:
             print ("Invalid ARTIST: can't be '{}' (use ALBUMARTIST instead)".format(VARIOUS_ARTISTS))
 
-        if HAS_FLAC:
+        if EXTERNALS["flac"]:
             # TODO: Figure out the return code if the md5 doesn't exist vs is invalid
             # Verify flac MD5 information
-            if subprocess.call(["flac", "-ts", self.path]) != 0:
+            if quiet_call(["flac", "-ts", self.path]) != 0:
                 # To fix no MD5: `flac --best -f <file>`
                 print("Failed to verify FLAC file - it may be corrupt")
 
         # Make sure there's no embedded album art
-        if HAS_METAFLAC:
-            if subprocess.call(["metaflac", "--export-picture-to=-", self.path],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
+        if EXTERNALS["metaflac"]:
+            if quiet_call(["metaflac", "--export-picture-to=-", self.path]) == 0:
                 print("Album art is embedded - remove it and provide a high-res '{}' instead.".format(COVER_FILENAME))
 
 
 def main():
 
-    # TODO: Make sure python 3.3+
-    # TODO: fallback for no flac/metaflac executables
+    if sys.version_info < (3, 3):
+        print("check-flac requires Python 3.3+ to run")
+        return 1
+
+    # Warn for missing executables
+    for k, v in EXTERNALS.items():
+        if not v:
+            print("WARNING: couldn't find the '{}' executable - some features will be unavailable".format(k))
 
     parser = argparse.ArgumentParser()
     parser.add_argument("albums", nargs="+", help="The album(s) to check")
@@ -397,6 +405,7 @@ def main():
     for album in args.albums:
         Album(album).validate()
 
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
