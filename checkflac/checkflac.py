@@ -34,9 +34,10 @@ Checks:
    - checks that disctotal is equal to the amount of discs
    - checks that tracktotal is equal to the number of tracks
    - checks for duplicate tags
-   - check the COMPILATION tag
+   - checks the COMPILATION tag
+   - Warns if album art is embedded
    - [TODO] warn if TRACKNUMBER is the "tracknum/totaltracks" style
-   - [TODO] warn if album art is embedded
+   - [TODO] warn on extra whitespace in tags
 
  - replaygain information:
    - checks reference loudness, album gain, album peak are at the disc level
@@ -48,6 +49,7 @@ import enum
 import functools
 import itertools
 import os
+import shutil
 import subprocess
 
 import taglib
@@ -56,6 +58,8 @@ MAX_PATH_LENGTH = 180
 COVER_FILENAME = "cover.jpg"
 VARIOUS_ARTISTS = "Various Artists"
 
+HAS_FLAC = bool(shutil.which("flac"))
+HAS_METAFLAC = bool(shutil.which("metaflac"))
 
 def has_ext(path, ext):
     return path.rsplit(".", 1)[-1].lower() == ext.lower()
@@ -368,15 +372,25 @@ class Track(ValidatorBase):
         if self.get_valid_tag("ARTIST") == VARIOUS_ARTISTS:
             print ("Invalid ARTIST: can't be '{}' (use ALBUMARTIST instead)".format(VARIOUS_ARTISTS))
 
-        # TODO: Figure out the return code if the md5 doesn't exist vs is invalid
-        if subprocess.call(["flac", "-ts", self.path]) != 0:
-            # To fix no MD5: `flac --best -f <file>`
-            print("Failed to verify FLAC file - it may be corrupt")
+        if HAS_FLAC:
+            # TODO: Figure out the return code if the md5 doesn't exist vs is invalid
+            # Verify flac MD5 information
+            if subprocess.call(["flac", "-ts", self.path]) != 0:
+                # To fix no MD5: `flac --best -f <file>`
+                print("Failed to verify FLAC file - it may be corrupt")
 
-        # TODO: Make sure there's no embedded album art
+        # Make sure there's no embedded album art
+        if HAS_METAFLAC:
+            if subprocess.call(["metaflac", "--export-picture-to=-", self.path],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
+                print("Album art is embedded - remove it and provide a high-res '{}' instead.".format(COVER_FILENAME))
 
 
 def main():
+
+    # TODO: Make sure python 3.3+
+    # TODO: fallback for no flac/metaflac executables
+
     parser = argparse.ArgumentParser()
     parser.add_argument("albums", nargs="+", help="The album(s) to check")
     args = parser.parse_args()
