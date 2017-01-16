@@ -20,10 +20,12 @@ Checks:
    - [TODO] check a folder with additional art is provided at the album level
 
  - The folder/file names:
-   - [TODO] validate a naming scheme
-     - folder: [<ALBUMARTIST> - ]<ALBUM> (<YEAR>) \[{CD,WEB}-FLAC\] {<anything}}
-     - file: <TRACKNUMBER> - [<ARTIST> - ]<TITLE>.flac
-   - [TODO] validate the name against vorbis information
+   - Check for invalid characters
+   - Validates a specific naming scheme
+     - album folder: [<ALBUMARTIST> - ]<ALBUM> (<YEAR>) \[<SOURCE>-FLAC\][ {<OTHER>}]
+     - disc folder: (CD|Disc )<DISCNUMBER>
+     - track name: <TRACKNUMBER> - [<ARTIST> - ]<TITLE>.flac
+   - Validates the name against vorbis information
 
  - vorbis information:
    - album, date, albumartist, and disctotal are at the album level
@@ -48,6 +50,7 @@ import enum
 import functools
 import itertools
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -57,6 +60,7 @@ import taglib
 MAX_PATH_LENGTH = 180
 COVER_FILENAME = "cover.jpg"
 VARIOUS_ARTISTS = "Various Artists"
+TAG_TRANSLATION = str.maketrans('<>:\/|"', "[]----'", "?*")
 EXTERNALS = {x: bool(shutil.which(x)) for x in ("flac", "metaflac")}
 
 
@@ -78,6 +82,31 @@ def validator(func):
         self.post_validate()
 
     return wrapped
+
+
+def readable_regex(regex):
+    """Make regular expressions more readable
+
+    (probably not a good general solution but works for the name regexps)
+
+    Note that the caron designates markup where it could be confused with the
+    literal character. Messy but understandable.
+    """
+    COMB = "\N{COMBINING CARON}"
+    c = lambda x, y: "".join((x[0], COMB, y, x[1], COMB))
+
+    s = regex.pattern.rstrip("$").lstrip("^")
+    # Convert named groups to just their names
+    s = re.sub('\(\?P<(.*?)>.*?\)', '<\\1>', s)
+    # Enclose non-capturing optional groups in []
+    s = re.sub('\(\?:(.*?)\)\?', c('[]', '\\1'), s)
+    # Remove the ?: from non-capturing non-optional groups
+    s = re.sub('\(\?:(.*?)\)', c('()', '\\1'), s)
+    # Ignore any extra ?+* (and preceeding characters unless +)
+    s = re.sub('.[?*]|(.)\+', '\\1', s)
+    # Remove escapes for {}()[]
+    s = re.sub('\\\\([][(){}])', '\\1' , s)
+    return s
 
 
 quiet_call = functools.partial(subprocess.call, stdout=subprocess.DEVNULL,
@@ -195,6 +224,54 @@ class ValidatorBase(object):
         for tag in self.REPLAYGAIN_TAGS:
             self.validate_all_same(tag)
 
+    def validate_name(self):
+        if self.name is None:
+            return
+
+        if self.name != self.name.translate(TAG_TRANSLATION):
+            print("Invalid characters detected in the {} name: '{}'".format(self.filetype, self.name))
+
+        m = self.NAME_REGEX.match(self.name)
+        if not m:
+            print("Incorrect {} {} name - correct format is '{}'".format(self.level, self.filetype, readable_regex(self.NAME_REGEX)))
+            return
+
+        metadata = {k: v for k, v in m.groupdict().items() if v is not None}
+        for x in self.REQUIRED_TAGS & metadata.keys():
+            tag = self.get_valid_tag(x)
+            if tag is None:
+                print("Unable to validate {} against {} name (see above)".format(x, self.filetype))
+                continue
+            name = metadata[x]
+
+            tag = tag.translate(TAG_TRANSLATION)
+            if tag != name:
+                print("Mismatch in tag {}: {}='{}', tag='{}'".format(x, self.filetype, name, tag))
+
+        # Album-specific
+        if isinstance(self, Album):
+            # Warn about missing OTHERINFO
+            if "OTHERINFO" not in metadata:
+                print("No extra identifying information is included in the folder name")
+
+            # Check optional albumartist
+            albumartist = metadata.get("ALBUMARTIST", None)
+            if albumartist == VARIOUS_ARTISTS:
+                print("An artist of '{}' should not be included in the folder name".format(VARIOUS_ARTISTS))
+                albumartist = None
+
+            if albumartist is None and self.get_valid_tag("COMPILATION") != "1":
+                print("No/various ALBUMARTIST specified in the folder name but not tagged as a compilation")
+
+        # Track-specific
+        elif isinstance(self, Track):
+            # Check if the artist should be in the filename
+            discartist, missing, multiple = self.disc._get_tag_and_check("ARTIST")
+            if discartist is not None and "ARTIST" in metadata:
+                print("ARTIST tags are all the same and therefore shouldn't be in the track name")
+            elif multiple and "ARTIST" not in metadata:
+                print("Multiple ARTIST tags - the track should include the ARTIST")
+
     def pre_validate(self):
         if self.name is None:
             print("Validating the only {}".format(self.level))
@@ -204,6 +281,7 @@ class ValidatorBase(object):
         self.validate_metadata_structure()
         self.validate_replaygain()
         self.validate_number_metadata()
+        self.validate_name()
 
     @validator
     def validate():
@@ -245,18 +323,24 @@ class ValidatorBase(object):
         return self.__class__.__name__.lower()
 
     @property
+    def filetype(self):
+        if isinstance(self, Track):
+            return "file"
+        return "folder"
+
+    @property
     def children(self):
         if isinstance(self, Album):
             return self.discs
         elif isinstance(self, Disc):
             return self.tracks
-        else:
-            return None
+        return None
 
 
 class Album(ValidatorBase):
 
     REQUIRED_TAGS = {"ALBUM", "DATE", "ALBUMARTIST", "DISCTOTAL"}
+    NAME_REGEX = re.compile("^(?:(?P<ALBUMARTIST>.*?) - )?(?P<ALBUM>.*) \((?P<DATE>.*)\) \[(?P<MEDIA>.+?) ?- ?FLAC\](?: \{(?P<OTHERINFO>.*)\})?$")
 
     def __init__(self, directory):
         self.directory = os.path.abspath(directory)
@@ -313,6 +397,7 @@ class Disc(ValidatorBase):
     REQUIRED_TAGS = {"DISCNUMBER", "TRACKTOTAL"}
     REPLAYGAIN_TAGS = {"REPLAYGAIN_REFERENCE_LOUDNESS", "REPLAYGAIN_ALBUM_GAIN",
                        "REPLAYGAIN_ALBUM_PEAK"}
+    NAME_REGEX = re.compile("^(?:CD|Disc )(?P<DISCNUMBER>[^ ]*)$")
 
     def __init__(self, album, directory, files):
         self.album = album
@@ -354,6 +439,7 @@ class Track(ValidatorBase):
 
     REQUIRED_TAGS = {"ARTIST", "TRACKNUMBER", "TITLE"}
     REPLAYGAIN_TAGS = {"REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_TRACK_PEAK"}
+    NAME_REGEX = re.compile("^(?P<TRACKNUMBER>[^ ]*) - (?:(?P<ARTIST>.*) - )?(?P<TITLE>.*).flac$")
 
     def __init__(self, disc, path):
         self.disc = disc
