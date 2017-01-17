@@ -22,10 +22,11 @@ Checks:
  - The folder/file names:
    - Check for invalid characters
    - Validates a specific naming scheme
-     - album folder: [<ALBUMARTIST> - ]<ALBUM> (<YEAR>) \[<SOURCE>-FLAC\][ {<OTHER>}]
+     - album folder: [<ALBUMARTIST> - ]<ALBUM> (<YEAR>) \[<MEDIA>-FLAC[-<QUALITY>]\][ {<OTHER>}]
      - disc folder: (CD|Disc )<DISCNUMBER>
      - track name: <TRACKNUMBER> - [<ARTIST> - ]<TITLE>.flac
    - Validates the name against vorbis information
+   - [TODO] don't require cue/log for non-CD SOURCE
 
  - vorbis information:
    - album, date, albumartist, and disctotal are at the album level
@@ -339,8 +340,8 @@ class ValidatorBase(object):
 
 class Album(ValidatorBase):
 
-    REQUIRED_TAGS = {"ALBUM", "DATE", "ALBUMARTIST", "DISCTOTAL"}
-    NAME_REGEX = re.compile("^(?:(?P<ALBUMARTIST>.*?) - )?(?P<ALBUM>.*) \((?P<DATE>.*)\) \[(?P<MEDIA>.+?) ?- ?FLAC\](?: \{(?P<OTHERINFO>.*)\})?$")
+    REQUIRED_TAGS = {"ALBUM", "DATE", "ALBUMARTIST", "DISCTOTAL", "MEDIA"}
+    NAME_REGEX = re.compile("^(?:(?P<ALBUMARTIST>.*?) - )?(?P<ALBUM>.*) \((?P<DATE>.*)\) \[(?P<MEDIA>.+?) ?- ?FLAC(?: ?- ?(?P<QUALITY>[^\]]*))?\](?: \{(?P<OTHERINFO>.*)\})?$")
 
     def __init__(self, directory):
         self.directory = os.path.abspath(directory)
@@ -394,7 +395,7 @@ class Album(ValidatorBase):
 
 class Disc(ValidatorBase):
 
-    REQUIRED_TAGS = {"DISCNUMBER", "TRACKTOTAL"}
+    REQUIRED_TAGS = {"DISCNUMBER", "TRACKTOTAL", "LABEL", "CATALOGNUMBER"}
     REPLAYGAIN_TAGS = {"REPLAYGAIN_REFERENCE_LOUDNESS", "REPLAYGAIN_ALBUM_GAIN",
                        "REPLAYGAIN_ALBUM_PEAK"}
     NAME_REGEX = re.compile("^(?:CD|Disc )(?P<DISCNUMBER>[^ ]*)$")
