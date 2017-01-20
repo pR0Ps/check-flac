@@ -84,6 +84,20 @@ def validator(func):
 
     return wrapped
 
+def compare_names(tag, name):
+    """Compare a tag against a filename and return if they're the same
+
+    Common substitutions will be tried.
+    """
+    if tag.translate(TAG_TRANSLATION) == name:
+        return True
+
+    # Allows "Album: Live in City" to match "Album - Live in City"
+    if tag.replace(":" , " :").translate(TAG_TRANSLATION) == name:
+        return True
+
+    return False
+
 
 def readable_regex(regex):
     """Make regular expressions more readable
@@ -229,7 +243,7 @@ class ValidatorBase(object):
         if self.name is None:
             return
 
-        if self.name != self.name.translate(TAG_TRANSLATION):
+        if not compare_names(self.name, self.name):
             print("Invalid characters detected in the {} name: '{}'".format(self.filetype, self.name))
 
         m = self.NAME_REGEX.match(self.name)
@@ -245,8 +259,7 @@ class ValidatorBase(object):
                 continue
             name = metadata[x]
 
-            tag = tag.translate(TAG_TRANSLATION)
-            if tag != name:
+            if not compare_names(tag, name):
                 print("Mismatch in tag {}: {}='{}', tag='{}'".format(x, self.filetype, name, tag))
 
         # Album-specific
