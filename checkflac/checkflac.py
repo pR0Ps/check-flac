@@ -14,7 +14,7 @@ Checks:
    - checks the path length of each file
 
  - The extra info:
-   - checks if a cue and log file are provided at the disc level
+   - checks if a cue and log file are provided at the disc level (for CD source only)
    - checks a cover image is provided at the album level
    - checks if an m3u file shoudl be deleted
    - [TODO] check a folder with additional art is provided at the album level
@@ -26,7 +26,6 @@ Checks:
      - disc folder: (CD|Disc )<DISCNUMBER>
      - track name: <TRACKNUMBER> - [<ARTIST> - ]<TITLE>.flac
    - Validates the name against vorbis information
-   - [TODO] don't require cue/log for non-CD SOURCE
 
  - vorbis information:
    - album, date, albumartist, and disctotal are at the album level
@@ -124,6 +123,15 @@ def readable_regex(regex):
     return s
 
 
+def remove_optional_regex(pattern, name):
+    """Removes an optional part of the regex by capture name
+
+    Must be of the format '(?:[anything](?P<[name]>[anything])[anything])?'
+    """
+    return re.sub("\(\?:[^(]*\(\?P<{}>[^)]*\)[^)]*\)\?".format(name), "",
+                  pattern)
+
+
 quiet_call = functools.partial(subprocess.call, stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL)
 
@@ -132,6 +140,29 @@ class Missing(enum.Enum):
     NONE = 0
     SOME = 1
     ALL = 2
+
+
+class Level(enum.Enum):
+    album = "album"
+    disc = "disc"
+    track = "track"
+
+    def __str__(self):
+        return str(self.value)
+
+    @staticmethod
+    def values():
+        return [x.value for x in Level]
+
+    @staticmethod
+    def classify(obj):
+        if isinstance(obj, Album):
+            return Level.album
+        elif isinstance(obj, Disc):
+            return Level.disc
+        elif isinstance(obj, Track):
+            return Level.track
+        raise ValueError("Object '{!r}' is not a Level".format(obj))
 
 
 class ValidatorBase(object):
@@ -167,15 +198,15 @@ class ValidatorBase(object):
 
     def _get_tag_and_check(self, tag_name):
         code, multiple, _ = self._check_all_same(tag_name)
-        if code == Missing.NONE and not multiple:
+        if code is Missing.NONE and not multiple:
             return self.get_valid_tag(tag_name), code, multiple
         return None, code, multiple
 
     def validate_all_same(self, tag):
         code, multiple, msgs = self._check_all_same(tag)
 
-        if code != Missing.NONE or multiple:
-            if isinstance(self, Track):
+        if code is not Missing.NONE or multiple:
+            if self.level is Level.track:
                 # Track can't have multiple values
                 print("Problem with tag {}: missing".format(tag))
             else:
@@ -183,9 +214,9 @@ class ValidatorBase(object):
 
     def validate_number_metadata(self):
         # Check for invalid [type]TOTAL metadata
-        if isinstance(self, Album):
+        if self.level is Level.album:
             tag = "DISC"
-        elif isinstance(self, Disc):
+        elif self.level is Level.disc:
             tag = "TRACK"
         else:
             # Nothing to do for tracks
@@ -263,13 +294,25 @@ class ValidatorBase(object):
                 print("Mismatch in tag {}: {}='{}', tag='{}'".format(x, self.filetype, name, tag))
 
         # Album-specific
-        if isinstance(self, Album):
+        if self.level is Level.album:
             # Warn about missing OTHERINFO
             if "OTHERINFO" not in metadata:
                 print("No extra identifying information is included in the folder name")
 
+            # Don't require cue/log files for non-cd rips (assume CD)
+            if metadata.get("MEDIA", "CD") != "CD":
+                self.config.no_cue_log = True
+
             # Check optional albumartist
             albumartist = metadata.get("ALBUMARTIST", None)
+            albumartist_tag = self.get_valid_tag("ALBUMARTIST")
+
+            if albumartist_tag is not None and albumartist is None:
+                print("No ALBUMARTIST found in the folder name but found in the tags")
+
+            if albumartist_tag is None and albumartist is not None:
+                print("ALBUMARTIST is in the folder name but is not in the tags")
+
             if albumartist and albumartist.lower() in VARIOUS_ARTISTS:
                 print("An artist of '{}' should not be included in the folder name".format(albumartist))
                 albumartist = None
@@ -278,7 +321,7 @@ class ValidatorBase(object):
                 print("No/various ALBUMARTIST specified in the folder name but not tagged as a compilation")
 
         # Track-specific
-        elif isinstance(self, Track):
+        elif self.level is Level.track:
             # Check if the artist should be in the filename
             discartist, missing, multiple = self.disc._get_tag_and_check("ARTIST")
             if discartist is not None and "ARTIST" in metadata:
@@ -290,10 +333,11 @@ class ValidatorBase(object):
         if self.name is None:
             print("Validating the only {}".format(self.level))
         else:
-            print("Validating {}: {}".format(self.level, self.name))
+            print("Validating {}: '{}'".format(self.level, self.name))
 
         self.validate_metadata_structure()
-        self.validate_replaygain()
+        if not self.config.no_replaygain:
+            self.validate_replaygain()
         self.validate_number_metadata()
         self.validate_name()
 
@@ -302,13 +346,14 @@ class ValidatorBase(object):
         pass
 
     def post_validate(self):
-        if self.children is not None:
-            for x in self.children:
-                x.validate()
+        if self.level is self.config.checklevel:
+            return
+        for x in self.children:
+            x.validate()
 
     def get_tag(self, tag_name, placeholder=False):
-        if self.children is None:
-            # No children to search through, return the tag
+        if self.level is Level.track:
+            # Down at the track level, return the tag
             if tag_name in self.tags:
                 tag = self.tags[tag_name]
 
@@ -321,9 +366,10 @@ class ValidatorBase(object):
                 return [None]
             else:
                 return []
-
-        return list(itertools.chain.from_iterable(x.get_tag(tag_name, placeholder)
-                                                  for x in self.children))
+        else:
+            return list(itertools.chain.from_iterable(
+                x.get_tag(tag_name, placeholder) for x in self.children
+            ))
 
     def get_valid_tag(self, tag_name):
         """Get a tag's valid if all children have the same valid (otherwise None)"""
@@ -334,19 +380,28 @@ class ValidatorBase(object):
 
     @property
     def level(self):
-        return self.__class__.__name__.lower()
+        return Level.classify(self)
 
     @property
     def filetype(self):
-        if isinstance(self, Track):
+        if self.level is Level.track:
             return "file"
         return "folder"
 
     @property
+    def config(self):
+        if self.level is Level.album:
+            return self._config
+        elif self.level is Level.disc:
+            return self.album._config
+        else:
+            return self.disc.album._config
+
+    @property
     def children(self):
-        if isinstance(self, Album):
+        if self.level is Level.album:
             return self.discs
-        elif isinstance(self, Disc):
+        elif self.level is Level.disc:
             return self.tracks
         return None
 
@@ -354,9 +409,11 @@ class ValidatorBase(object):
 class Album(ValidatorBase):
 
     REQUIRED_TAGS = {"ALBUM", "DATE", "ALBUMARTIST", "DISCTOTAL", "MEDIA"}
-    NAME_REGEX = re.compile("^(?:(?P<ALBUMARTIST>.*?) - )?(?P<ALBUM>.*) \((?P<DATE>.*)\) \[(?P<MEDIA>.+?) ?- ?FLAC(?: ?- ?(?P<QUALITY>[^\]]*))?\](?: \{(?P<OTHERINFO>.*)\})?$")
+    _NAME_PATTERN = "^(?:(?P<ALBUMARTIST>.*?) - )?(?P<ALBUM>.*) \((?P<DATE>.*)\) \[(?P<MEDIA>.+?) ?- ?FLAC(?: ?- ?(?P<QUALITY>[^\]]*))?\](?: \{(?P<OTHERINFO>.*)\})?$"
 
-    def __init__(self, directory):
+    def __init__(self, directory, config):
+        # Keep a copy of the config - our changes shouldn't affect other Albums
+        self._config = argparse.Namespace(**vars(config))
         self.directory = os.path.abspath(directory)
 
         if not os.path.isdir(self.directory):
@@ -366,17 +423,22 @@ class Album(ValidatorBase):
         self.name = os.path.basename(self.directory)
         self.discs = self._find_discs()
 
+        if self.config.no_albumartist:
+            self.NAME_REGEX = re.compile(remove_optional_regex(self._NAME_PATTERN, "ALBUMARTIST"))
+        else:
+            self.NAME_REGEX = re.compile(self._NAME_PATTERN)
+
     def validate_compilation(self):
         """Validate the relationship between ARTIST, ALBUMARTIST and COMPILATION"""
         # Validate compilation tag
         compilation, c_missing, _ = self._get_tag_and_check("COMPILATION")
-        if not (c_missing == Missing.ALL or (c_missing == Missing.NONE and compilation == "1")):
+        if not (c_missing is Missing.ALL or (c_missing is Missing.NONE and compilation == "1")):
             print("Invalid COMPILATION tag: must all be set to '1' or unset")
 
         # Blank ALBUMARTIST, same ARTIST
         albumartist, aa_missing, _ = self._get_tag_and_check("ALBUMARTIST")
         artist, a_missing, multiple_artists = self._get_tag_and_check("ARTIST")
-        if aa_missing == Missing.ALL and artist is not None:
+        if aa_missing is Missing.ALL and artist is not None:
             print("ALBUMARTIST tag should be set to '{}' (is unset but ARTIST tags are all the same)".format(artist))
 
         # same ARTISTS, different than ALBUMARTIST
@@ -440,12 +502,13 @@ class Disc(ValidatorBase):
             print("No cover art found (looking for '{}')".format(COVER_FILENAME))
 
         # Check cue and log files are present
-        for x in ("cue", "log"):
-            f = files_by_ext(self.files, x)
-            if not f:
-                print("No *.{} file found".format(x))
-            elif len(f) > 1:
-                print("Multiple *.{} files found".format(x))
+        if not self.album.config.no_cue_log:
+            for x in ("cue", "log"):
+                f = files_by_ext(self.files, x)
+                if not f:
+                    print("No *.{} file found".format(x))
+                elif len(f) > 1:
+                    print("Multiple *.{} files found".format(x))
 
         # Check if m3u files are present
         for x in ("m3u", "m3u8"):
@@ -460,7 +523,7 @@ class Track(ValidatorBase):
 
     REQUIRED_TAGS = {"ARTIST", "TRACKNUMBER", "TITLE"}
     REPLAYGAIN_TAGS = {"REPLAYGAIN_TRACK_GAIN", "REPLAYGAIN_TRACK_PEAK"}
-    NAME_REGEX = re.compile("^(?P<TRACKNUMBER>[^ ]*) - (?:(?P<ARTIST>.*) - )?(?P<TITLE>.*).flac$")
+    _NAME_PATTERN = "^(?P<TRACKNUMBER>[^ ]*) - (?:(?P<ARTIST>.*) - )?(?P<TITLE>.*).flac$"
 
     def __init__(self, disc, path):
         self.disc = disc
@@ -468,6 +531,11 @@ class Track(ValidatorBase):
         self.name = os.path.basename(path)
         self.song = taglib.File(path)
         self.tags = self.song.tags
+
+        if self.config.no_trackartist:
+            self.NAME_REGEX = re.compile(remove_optional_regex(self._NAME_PATTERN, "ARTIST"))
+        else:
+            self.NAME_REGEX = re.compile(self._NAME_PATTERN)
 
     @validator
     def validate(self):
@@ -482,7 +550,7 @@ class Track(ValidatorBase):
         if artist and artist.lower() in VARIOUS_ARTISTS:
             print ("Invalid ARTIST: can't be '{}' (use ALBUMARTIST instead)".format(artist))
 
-        if EXTERNALS["flac"]:
+        if not self.config.no_flactest and EXTERNALS["flac"]:
             # Verify flac MD5 information
             if quiet_call(["flac", "--test", "--warnings-as-errors", self.path]) != 0:
                 # To fix no MD5: `flac --best -f <file>`
@@ -507,9 +575,22 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("albums", nargs="+", help="The album(s) to check")
-    args = parser.parse_args()
-    for album in args.albums:
-        Album(album).validate()
+    parser.add_argument("--checklevel", action="store", type=str, choices=tuple(Level.values()), default=str(Level.track), help="The level to check down to (default: %(default)s)")
+    parser.add_argument("--no-replaygain", action="store_true", help="Don't check for any replaygain tags")
+    parser.add_argument("--no-flactest", action="store_true", help="Don't test flac files for corruption/errors (can be slow)")
+    parser.add_argument("--no-albumartist", action="store_true", help="Assume the album artist is NOT in the foldername (default is to detect this automatically, only enable if you have issues)")
+    parser.add_argument("--no-trackartist", action="store_true", help="Assume the artist is NOT in track filenames (default is to detect this automatically, only enable if you have issues)")
+    parser.add_argument("--no-cue-log", action="store_true", help="Don't look for any *.cue or *.log files (this is the default for non-CD media)")
+
+    config = parser.parse_args()
+    albums = config.albums
+
+    # Massage the config a bit
+    delattr(config, "albums")
+    config.checklevel = Level(config.checklevel)
+
+    for album in albums:
+        Album(album, config).validate()
 
     return 0
 
