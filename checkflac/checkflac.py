@@ -60,7 +60,7 @@ import taglib
 
 MAX_PATH_LENGTH = 180
 COVER_FILENAME = "cover.jpg"
-VARIOUS_ARTISTS = "Various Artists"
+VARIOUS_ARTISTS = set(["various artists", "various", "va"])
 TAG_TRANSLATION = str.maketrans('<>:\/|"', "[]----'", "?*")
 EXTERNALS = {x: bool(shutil.which(x)) for x in ("flac", "metaflac")}
 
@@ -270,8 +270,8 @@ class ValidatorBase(object):
 
             # Check optional albumartist
             albumartist = metadata.get("ALBUMARTIST", None)
-            if albumartist == VARIOUS_ARTISTS:
-                print("An artist of '{}' should not be included in the folder name".format(VARIOUS_ARTISTS))
+            if albumartist and albumartist.lower() in VARIOUS_ARTISTS:
+                print("An artist of '{}' should not be included in the folder name".format(albumartist))
                 albumartist = None
 
             if albumartist is None and self.get_valid_tag("COMPILATION") != "1":
@@ -384,16 +384,23 @@ class Album(ValidatorBase):
             print("ALBUMARTIST is set to '{}' but all the ARTIST tags are '{}'".format(albumartist, artist))
 
         # Different ARTISTs, not a compilation
-        if albumartist == VARIOUS_ARTISTS and compilation != "1":
-            print ("ALBUMARTIST is set to '{}' but COMPILATION is not set".format(VARIOUS_ARTISTS))
+        if (albumartist and albumartist.lower() in VARIOUS_ARTISTS) and compilation != "1":
+            print ("ALBUMARTIST is set to '{}' but COMPILATION is not set".format(albumartist))
 
         # Not a compilation, but different ARTISTS
         if compilation != "1" and multiple_artists:
             print("COMPILATION is not set but there are multiple different ARTISTs tags")
 
+    def validate_albumartist(self):
+        albumartist = self.get_valid_tag("ALBUMARTIST")
+        if albumartist and albumartist.lower() in VARIOUS_ARTISTS:
+            print("The ALBUMARTST tag is '{}' - for albums without a main "
+                  "artist it should be deleted instead".format(albumartist))
+
     @validator
     def validate(self):
         self.validate_compilation()
+        self.validate_albumartist()
 
     def _find_discs(self):
         ret = []
@@ -471,8 +478,9 @@ class Track(ValidatorBase):
             print("The path '{}' is too long ({} > {})".format(rel_path, pathlen, MAX_PATH_LENGTH))
 
         # Don't allow various artists in the ARTIST tag
-        if self.get_valid_tag("ARTIST") == VARIOUS_ARTISTS:
-            print ("Invalid ARTIST: can't be '{}' (use ALBUMARTIST instead)".format(VARIOUS_ARTISTS))
+        artist = self.get_valid_tag("ARTIST")
+        if artist and artist.lower() in VARIOUS_ARTISTS:
+            print ("Invalid ARTIST: can't be '{}' (use ALBUMARTIST instead)".format(artist))
 
         if EXTERNALS["flac"]:
             # Verify flac MD5 information
