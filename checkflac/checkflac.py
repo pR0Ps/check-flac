@@ -206,6 +206,10 @@ class ValidatorBase(object):
     def validate_all_same(self, tag):
         code, multiple, msgs = self._check_all_same(tag)
 
+        # This is expected for compilations - catch this later if it's not
+        if tag == "ALBUMARTIST" and code is Missing.ALL:
+            return
+
         if code is not Missing.NONE or multiple:
             if self.level is Level.track:
                 # Track can't have multiple values
