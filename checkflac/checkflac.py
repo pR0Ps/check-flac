@@ -22,7 +22,7 @@ Checks:
  - The folder/file names:
    - Check for invalid characters
    - Validates a specific naming scheme
-     - album folder: [<ALBUMARTIST> - ]<ALBUM> (<YEAR>) \[<MEDIA>-FLAC[-<QUALITY>]\][ {<OTHER>}]
+     - album folder: [<ALBUMARTIST> - ]<ALBUM> (<ORIGYEAR>) \[<MEDIA>-FLAC[-<QUALITY>]\][ {<OTHER>}]
      - disc folder: (CD|Disc )<DISCNUMBER>
      - track name: <TRACKNUMBER> - [<ARTIST> - ]<TITLE>.flac
    - Validates the name against vorbis information
@@ -84,11 +84,16 @@ def validator(func):
 
     return wrapped
 
-def compare_names(tag, name):
+def compare_names(tag, name, tagname=None):
     """Compare a tag against a filename and return if they're the same
 
     Common substitutions will be tried.
+    Dates will only require the year to match (if more than a year is provided)
     """
+    # Special comparison for dates (only check the year)
+    if tagname in {"DATE", "ORIGDATE"}:
+        return name == tag.split("-", 1)[0]
+
     if tag.translate(TAG_TRANSLATION) == name:
         return True
 
@@ -210,6 +215,10 @@ class ValidatorBase(object):
         if tag == "ALBUMARTIST" and code is Missing.ALL:
             return
 
+        # This is expected for the original release
+        if tag == "ORIGDATE" and code is Missing.ALL:
+            return
+
         if code is not Missing.NONE or multiple:
             if self.level is Level.track:
                 # Track can't have multiple values
@@ -288,15 +297,22 @@ class ValidatorBase(object):
             return
 
         metadata = {k: v for k, v in m.groupdict().items() if v is not None}
-        for x in self.REQUIRED_TAGS & metadata.keys():
-            tag = self.get_valid_tag(x)
-            if tag is None:
-                print("Unable to validate {} against {} name (see above)".format(x, self.filetype))
-                continue
-            name = metadata[x]
+        for tagname in self.REQUIRED_TAGS & metadata.keys():
+            tag = self.get_valid_tag(tagname)
+            name = metadata[tagname]
 
-            if not compare_names(tag, name):
-                print("Mismatch in tag {}: {}='{}', tag='{}'".format(x, self.filetype, name, tag))
+            # Special case handling for album ORIGDATE/DATE
+            # assume DATE is the ORIGDATE if no ORIGDATE is provided
+            if tag is None and tagname == "ORIGDATE":
+                tagname = "DATE"
+                tag = self.get_valid_tag(tagname)
+
+            if tag is None:
+                print("Unable to validate {} against {} name (see above)".format(tagname, self.filetype))
+                continue
+
+            if not compare_names(tag, name, tagname):
+                print("Mismatch in tag {}: {}='{}', tag='{}'".format(tagname, self.filetype, name, tag))
 
         # Album-specific
         if self.level is Level.album:
@@ -413,8 +429,8 @@ class ValidatorBase(object):
 
 class Album(ValidatorBase):
 
-    REQUIRED_TAGS = {"ALBUM", "DATE", "ALBUMARTIST", "DISCTOTAL", "MEDIA"}
-    _NAME_PATTERN = "^(?:(?P<ALBUMARTIST>.*?) - )?(?P<ALBUM>.*) \((?P<DATE>.*)\) \[(?P<MEDIA>.+?) ?- ?FLAC(?: ?- ?(?P<QUALITY>[^\]]*))?\](?: \{(?P<OTHERINFO>.*)\})?$"
+    REQUIRED_TAGS = {"ALBUM", "DATE", "ORIGDATE", "ALBUMARTIST", "DISCTOTAL", "MEDIA"}
+    _NAME_PATTERN = "^(?:(?P<ALBUMARTIST>.*?) - )?(?P<ALBUM>.*) \((?P<ORIGDATE>.*)\) \[(?P<MEDIA>.+?) ?- ?FLAC(?: ?- ?(?P<QUALITY>[^\]]*))?\](?: \{(?P<OTHERINFO>.*)\})?$"
 
     def __init__(self, directory, config):
         # Keep a copy of the config - our changes shouldn't affect other Albums
