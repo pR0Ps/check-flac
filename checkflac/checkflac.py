@@ -37,6 +37,7 @@ Checks:
    - checks for duplicate tags
    - checks the COMPILATION tag
    - Warns if album art is embedded
+   - Warns on sort tags (ALBUMSORT, TITLESORT, ARTISTSORT, etc)
    - [TODO] warn if TRACKNUMBER is the "tracknum/totaltracks" style
    - [TODO] warn on extra whitespace in tags
 
@@ -537,6 +538,12 @@ class Track(ValidatorBase):
         else:
             self.NAME_REGEX = re.compile(self._NAME_PATTERN)
 
+    def check_sort_tags(self):
+        """Make sure no *SORT tags are set on the track"""
+        for x in self.tags:
+            if x.endswith("SORT"):
+                print("Sorting tag '{}' found - should be removed".format(x))
+
     @validator
     def validate(self):
         # Ensure the total path length is ok
@@ -544,6 +551,8 @@ class Track(ValidatorBase):
         pathlen = len(rel_path)
         if pathlen > MAX_PATH_LENGTH:
             print("The path '{}' is too long ({} > {})".format(rel_path, pathlen, MAX_PATH_LENGTH))
+
+        self.check_sort_tags()
 
         # Don't allow various artists in the ARTIST tag
         artist = self.get_valid_tag("ARTIST")
@@ -563,7 +572,6 @@ class Track(ValidatorBase):
 
 
 def main():
-
     if sys.version_info < (3, 3):
         print("check-flac requires Python 3.3+ to run")
         return 1
