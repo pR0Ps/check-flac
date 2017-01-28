@@ -49,7 +49,6 @@ Checks:
 import argparse
 import enum
 import functools
-import itertools
 import os
 import re
 import shutil
@@ -173,8 +172,8 @@ class Level(enum.Enum):
 
 class ValidatorBase(object):
 
-    REQUIRED_TAGS = {}
-    REPLAYGAIN_TAGS = {}
+    REQUIRED_TAGS = set()
+    REPLAYGAIN_TAGS = set()
 
     def _check_all_same(self, tag):
         """Check and generate messages but don't print them
@@ -354,7 +353,7 @@ class ValidatorBase(object):
         if self.name is None:
             print("Validating the only {}".format(self.level))
         else:
-            print("Validating {}: '{}'".format(self.level, self.name))
+            print("Validating {}".format(self))
 
         self.validate_metadata_structure()
         if not self.config.no_replaygain:
@@ -388,12 +387,10 @@ class ValidatorBase(object):
             else:
                 return []
         else:
-            return list(itertools.chain.from_iterable(
-                x.get_tag(tag_name, placeholder) for x in self.children
-            ))
+            return list(t for c in self.children for t in c.get_tag(tag_name, placeholder))
 
     def get_valid_tag(self, tag_name):
-        """Get a tag's valid if all children have the same valid (otherwise None)"""
+        """Get a tag's valid if all children have the same one (otherwise None)"""
         tags = set(self.get_tag(tag_name))
         if len(tags) == 1:
             return next(iter(tags))
@@ -426,6 +423,9 @@ class ValidatorBase(object):
             return self.tracks
         return None
 
+    def __repr__(self):
+        return "<{} '{}'>".format(self.level, self.name)
+
 
 class Album(ValidatorBase):
 
@@ -433,6 +433,7 @@ class Album(ValidatorBase):
     _NAME_PATTERN = "^(?:(?P<ALBUMARTIST>.*?) - )?(?P<ALBUM>.*) \((?P<ORIGDATE>.*)\) \[(?P<MEDIA>.+?) ?- ?FLAC(?: ?- ?(?P<QUALITY>[^\]]*))?\](?: \{(?P<OTHERINFO>.*)\})?$"
 
     def __init__(self, directory, config):
+        super().__init__()
         # Keep a copy of the config - our changes shouldn't affect other Albums
         self._config = argparse.Namespace(**vars(config))
         self.directory = os.path.abspath(directory)
@@ -504,6 +505,7 @@ class Disc(ValidatorBase):
     NAME_REGEX = re.compile("^(?:CD|Disc )(?P<DISCNUMBER>[^ ]*)$")
 
     def __init__(self, album, directory, files):
+        super().__init__()
         self.album = album
         self.directory = directory
 
@@ -547,6 +549,7 @@ class Track(ValidatorBase):
     _NAME_PATTERN = "^(?P<TRACKNUMBER>[^ ]*) - (?:(?P<ARTIST>.*) - )?(?P<TITLE>.*).flac$"
 
     def __init__(self, disc, path):
+        super().__init__()
         self.disc = disc
         self.path = path
         self.name = os.path.basename(path)
