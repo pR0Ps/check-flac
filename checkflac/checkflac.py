@@ -61,7 +61,7 @@ import sys
 import taglib
 
 MAX_PATH_LENGTH = 180
-COVER_FILENAME = "cover.jpg"
+COVER_REGEX = re.compile("cover\.(jpe?g|png|gif)")
 DATE_TAGS = set(["DATE", "ORIGDATE"])
 TAG_MAP = {  # Common bad tags, substitutions, and misspellings
     re.compile("(ORIG)?YEAR"): "\\1DATE",
@@ -80,6 +80,10 @@ def has_ext(path, ext):
 
 def files_by_ext(files, ext):
     return [x for x in files if has_ext(x, ext)]
+
+
+def files_by_regex(files, regex):
+    return [x for x in files if regex.fullmatch(os.path.basename(x))]
 
 
 def validator(func):
@@ -644,8 +648,8 @@ class Disc(ValidatorBase):
     @validator
     def validate(self):
         # Check album art is present
-        if COVER_FILENAME not in self.files:
-            print("No cover art found (looking for '{}')".format(COVER_FILENAME))
+        if not files_by_regex(self.files, COVER_REGEX):
+            print("No cover art found")
 
         # Check cue and log files are present
         if not self.album.config.no_cue_log:
@@ -699,14 +703,13 @@ class Track(ValidatorBase):
 
         if not self.config.no_flactest and EXTERNALS["flac"]:
             # Verify flac MD5 information
-            if quiet_call(["flac", "--test", "--warnings-as-errors", self.path]) != 0:
-                # To fix no MD5: `flac --best -f <file>`
+            if quiet_call(("flac", "--test", "--warnings-as-errors", self.path)) != 0:
                 print("Failed to verify FLAC file - it may be corrupt or not have an MD5 set")
 
         if EXTERNALS["metaflac"]:
             # Make sure there's no embedded album art
-            if quiet_call(["metaflac", "--export-picture-to=-", self.path]) == 0:
-                print("Album art is embedded - remove it and provide a high-res '{}' instead.".format(COVER_FILENAME))
+            if quiet_call(("metaflac", "--export-picture-to=-", self.path)) == 0:
+                print("Album art is embedded - remove it and provide a high-res image file instead.")
 
 
 def main():
