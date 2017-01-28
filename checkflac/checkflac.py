@@ -38,8 +38,9 @@ Checks:
    - checks the COMPILATION tag
    - Warns if album art is embedded
    - Warns on sort tags (ALBUMSORT, TITLESORT, ARTISTSORT, etc)
+   - Validate DATE/ORIGDATE are dates
+   - Warn on extra/only whitespace in tags
    - [TODO] warn if TRACKNUMBER is the "tracknum/totaltracks" style
-   - [TODO] warn on extra whitespace in tags
 
  - replaygain information:
    - checks reference loudness, album gain, album peak are at the disc level
@@ -47,7 +48,9 @@ Checks:
 """
 
 import argparse
+import contextlib
 import enum
+import datetime
 import functools
 import os
 import re
@@ -59,6 +62,13 @@ import taglib
 
 MAX_PATH_LENGTH = 180
 COVER_FILENAME = "cover.jpg"
+DATE_TAGS = set(["DATE", "ORIGDATE"])
+TAG_MAP = {  # Common bad tags, substitutions, and misspellings
+    re.compile("(ORIG)?YEAR"): "\\1DATE",
+    re.compile("TOTAL(TRACK|DISC)S"): "\\1TOTAL",
+    re.compile(".*SORT"): None,
+    re.compile("(.*)DISK(.*)"): "\\1DISC\\2"
+}
 VARIOUS_ARTISTS = set(["various artists", "various", "va"])
 TAG_TRANSLATION = str.maketrans('<>:\/|"', "[]----'", "?*")
 EXTERNALS = {x: bool(shutil.which(x)) for x in ("flac", "metaflac")}
@@ -83,15 +93,16 @@ def validator(func):
 
     return wrapped
 
+
 def compare_names(tag, name, tagname=None):
     """Compare a tag against a filename and return if they're the same
 
     Common substitutions will be tried.
-    Dates will only require the year to match (if more than a year is provided)
+    Dates will only require the minimum provided data to match
     """
-    # Special comparison for dates (only check the year)
-    if tagname in {"DATE", "ORIGDATE"}:
-        return name == tag.split("-", 1)[0]
+
+    if tagname in DATE_TAGS:
+        return Date.parse(tag) == Date.parse(name) is not None
 
     if tag.translate(TAG_TRANSLATION) == name:
         return True
@@ -139,6 +150,69 @@ def remove_optional_regex(pattern, name):
 
 quiet_call = functools.partial(subprocess.call, stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL)
+
+
+class Date(object):
+    """Class to hold date information
+
+    The reason why this class is needed instead of just using the datetime.date
+    class is that it can deal with optional components of the date.
+
+    Ex: A date with no month or day, just a year is NOT the same thing as
+    January 1st of that year.
+
+    There is no protection from making an invalid date, it is assumed (but
+    never checked) that a year will always be defined, that the month will not
+    be None if there is a day, etc.
+    """
+
+    def __init__(self, year, month=None, day=None):
+        self.year = int(year) if year is not None else None
+        self.month = int(month) if month is not None else None
+        self.day = int(day) if day is not None else None
+
+    def __eq__(self, other):
+        """Dates are considered equal if all the specified information is the
+        same
+
+        Ex: "2000" == "2000-02" == "2000-02-20"
+        """
+        if not isinstance(other, Date):
+            return NotImplemented
+
+        if self.year != other.year:
+            return False
+        if self.month is None or other.month is None:
+            return True
+        if self.month != other.month:
+            return False
+        if self.day is None or other.day is None:
+            return True
+        return self.day == other.day
+
+    def __str__(self):
+        tmpl = "{year:04d}"
+        if self.month is not None:
+            tmpl += "-{month:02d}"
+        if self.day is not None:
+            tmpl += "-{day:02d}"
+        return tmpl.format(**self.__dict__)
+
+    @staticmethod
+    def parse(s):
+        """Parse an ISO-formatted date"""
+        if s is None:
+            return None
+        with contextlib.suppress(ValueError):
+            d = datetime.datetime.strptime(s, "%Y-%m-%d")
+            return Date(d.year, d.month, d.day)
+        with contextlib.suppress(ValueError):
+            d = datetime.datetime.strptime(s, "%Y-%m")
+            return Date(d.year, d.month)
+        with contextlib.suppress(ValueError):
+            d = datetime.datetime.strptime(s, "%Y")
+            return Date(d.year)
+        return None
 
 
 class Missing(enum.Enum):
@@ -207,6 +281,57 @@ class ValidatorBase(object):
             return self.get_valid_tag(tag_name), code, multiple
         return None, code, multiple
 
+    def process_tagmap(self, tagname):
+        """Handles the mappings of bad -> good tags"""
+        for bad, good in TAG_MAP.items():
+            regex = isinstance(bad, re._pattern_type)
+            if regex and not bad.fullmatch(tagname):
+                continue
+            elif not regex and bad != tagname:
+                continue
+
+            if good is None:
+                print("{} tag detected - remove them".format(tagname))
+                continue
+
+            rep = bad.sub(good, tagname) if regex else good
+            if self.get_tag(rep):
+                print("{} tag detected, remove them ({} tag already exists)".format(tagname, rep))
+            else:
+                print("{} tag detected - use {} tags instead".format(tagname, rep))
+
+    def validate_tag_contents(self):
+        """Validate all tags, not the just the expected ones"""
+
+        for tagname in self.get_tag_list() - self.config.checked_tags:
+            tag = self.get_valid_tag(tagname)
+            if tag is None:
+                # Do the check at a lower level
+                continue
+
+            # Mark the tag as checked so it isn't checked again later
+            self.config.checked_tags.add(tagname)
+
+            self.process_tagmap(tagname)
+
+            # Check for extra/only whitespace in tags
+            # TODO: taglib will not report zero-length tags - look into this
+            stripped = tag.strip()
+            if tag != stripped:
+                print("{} tag '{}' has extra whitespace in it".format(tagname, tag))
+                continue
+            elif stripped == "":
+                print("{} tag is blank - delete it".format(tagname))
+                continue
+
+            # Validate date-related tags are correctly formatted
+            if tagname in DATE_TAGS:
+                if Date.parse(tag) is None:
+                    print("{} tag value '{}' is incorrectly formatted and "
+                          "couldn't be parsed (should be 'yyyy[-mm[-dd]]')"
+                          "".format(tagname, tag))
+                continue
+
     def validate_all_same(self, tag):
         code, multiple, msgs = self._check_all_same(tag)
 
@@ -235,31 +360,21 @@ class ValidatorBase(object):
             # Nothing to do for tracks
             return
 
-        total_bad_tag = "TOTAL{}S".format(tag)
-        total_good_tag = "{}TOTAL".format(tag)
+        total_tag = "{}TOTAL".format(tag)
         number_tag = "{}NUMBER".format(tag)
         tag = tag.lower()
 
-        # Check for the wrong tag information ([type]TOTAL > TOTAL[types]S)
-        if self.get_tag(total_bad_tag):
-            if self.get_tag(total_good_tag):
-                print("{} tag(s) detected, delete them ({} tag already exists)"
-                      "".format(total_bad_tag, total_good_tag))
-            else:
-                print("{} tag(s) detected, convert them to {} tags"
-                      "".format(total_bad_tag, total_good_tag))
-
         # Check [type]TOTAL = number of [type]s
-        temp = self.get_valid_tag(total_good_tag)
+        temp = self.get_valid_tag(total_tag)
         if temp is not None:
             try:
                 total = int(temp)
             except (ValueError, TypeError):
-                print("Problem with {} tag (non-numeric)".format(total_good_tag))
+                print("Problem with {} tag (non-numeric)".format(total_tag))
             else:
                 if total != len(self.children):
                     print("Problem with {0} tag (found {2} {1}s, {0}={3})"
-                          "".format(total_good_tag, tag, len(self.children), total))
+                          "".format(total_tag, tag, len(self.children), total))
 
         # Check [type] sort order
         numbers = self.get_tag(number_tag)
@@ -358,6 +473,7 @@ class ValidatorBase(object):
         self.validate_metadata_structure()
         if not self.config.no_replaygain:
             self.validate_replaygain()
+        self.validate_tag_contents()
         self.validate_number_metadata()
         self.validate_name()
 
@@ -370,6 +486,13 @@ class ValidatorBase(object):
             return
         for x in self.children:
             x.validate()
+
+    def get_tag_list(self):
+        """Get a list of all the different tags on this item"""
+        if self.level is Level.track:
+            return set(self.tags)
+        else:
+            return set(t for c in self.children for t in c.get_tag_list())
 
     def get_tag(self, tag_name, placeholder=False):
         if self.level is Level.track:
@@ -391,8 +514,8 @@ class ValidatorBase(object):
 
     def get_valid_tag(self, tag_name):
         """Get a tag's valid if all children have the same one (otherwise None)"""
-        tags = set(self.get_tag(tag_name))
-        if len(tags) == 1:
+        tags = set(self.get_tag(tag_name, placeholder=True))
+        if len(tags) == 1 and None not in tags:
             return next(iter(tags))
         return None
 
@@ -435,7 +558,7 @@ class Album(ValidatorBase):
     def __init__(self, directory, config):
         super().__init__()
         # Keep a copy of the config - our changes shouldn't affect other Albums
-        self._config = argparse.Namespace(**vars(config))
+        self._config = argparse.Namespace(**vars(config), checked_tags=set())
         self.directory = os.path.abspath(directory)
 
         if not os.path.isdir(self.directory):
@@ -561,12 +684,6 @@ class Track(ValidatorBase):
         else:
             self.NAME_REGEX = re.compile(self._NAME_PATTERN)
 
-    def check_sort_tags(self):
-        """Make sure no *SORT tags are set on the track"""
-        for x in self.tags:
-            if x.endswith("SORT"):
-                print("Sorting tag '{}' found - should be removed".format(x))
-
     @validator
     def validate(self):
         # Ensure the total path length is ok
@@ -574,8 +691,6 @@ class Track(ValidatorBase):
         pathlen = len(rel_path)
         if pathlen > MAX_PATH_LENGTH:
             print("The path '{}' is too long ({} > {})".format(rel_path, pathlen, MAX_PATH_LENGTH))
-
-        self.check_sort_tags()
 
         # Don't allow various artists in the ARTIST tag
         artist = self.get_valid_tag("ARTIST")
