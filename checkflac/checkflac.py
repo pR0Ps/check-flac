@@ -22,7 +22,7 @@ Checks:
  - The folder/file names:
    - Check for invalid characters
    - Validates a specific naming scheme
-     - album folder: [<ALBUMARTIST> - ]<ALBUM> (<ORIGYEAR>) \[<MEDIA>-FLAC[-<QUALITY>]\][ {<OTHER>}]
+     - album folder: [<ALBUMARTIST> - ]<ALBUM> (<ORIGINALYEAR>) \[<MEDIA>-FLAC[-<QUALITY>]\][ {<OTHER>}]
      - disc folder: (CD|Disc )<DISCNUMBER>
      - track name: <TRACKNUMBER> - [<ARTIST> - ]<TITLE>.flac
    - Validates the name against vorbis information
@@ -35,10 +35,10 @@ Checks:
    - checks that disctotal is equal to the amount of discs
    - checks that tracktotal is equal to the number of tracks
    - checks for duplicate tags
-   - checks the COMPILATION tag
+   - checks the COMPILATION tag at the album level
    - Warns if album art is embedded
    - Warns on sort tags (ALBUMSORT, TITLESORT, ARTISTSORT, etc)
-   - Validate DATE/ORIGDATE are dates
+   - Validate DATE/ORIGINALDATE are dates
    - Warn on extra/only whitespace in tags
    - [TODO] warn if TRACKNUMBER is the "tracknum/totaltracks" style
 
@@ -62,9 +62,9 @@ import taglib
 
 MAX_PATH_LENGTH = 180
 COVER_REGEX = re.compile("cover\.(jpe?g|png|gif)")
-DATE_TAGS = set(["DATE", "ORIGDATE"])
+DATE_TAGS = set(["DATE", "ORIGINALDATE"])
 TAG_MAP = {  # Common bad tags, substitutions, and misspellings
-    re.compile("(ORIG)?YEAR"): "\\1DATE",
+    re.compile("(ORIGINAL)?YEAR"): "\\1DATE",
     re.compile("TOTAL(TRACK|DISC)S"): "\\1TOTAL",
     re.compile(".*SORT"): None,
     re.compile("(.*)DISK(.*)"): "\\1DISC\\2"
@@ -344,7 +344,7 @@ class ValidatorBase(object):
             return
 
         # This is expected for the original release
-        if tag == "ORIGDATE" and code is Missing.ALL:
+        if tag == "ORIGINALDATE" and code is Missing.ALL:
             return
 
         if code is not Missing.NONE or multiple:
@@ -419,9 +419,9 @@ class ValidatorBase(object):
             tag = self.get_valid_tag(tagname)
             name = metadata[tagname]
 
-            # Special case handling for album ORIGDATE/DATE
-            # assume DATE is the ORIGDATE if no ORIGDATE is provided
-            if tag is None and tagname == "ORIGDATE":
+            # Special case handling for album ORIGINALDATE/DATE
+            # assume DATE is the ORIGINALDATE if no ORIGINALDATE is provided
+            if tag is None and tagname == "ORIGINALDATE":
                 tagname = "DATE"
                 tag = self.get_valid_tag(tagname)
 
@@ -556,8 +556,8 @@ class ValidatorBase(object):
 
 class Album(ValidatorBase):
 
-    REQUIRED_TAGS = {"ALBUM", "DATE", "ORIGDATE", "ALBUMARTIST", "DISCTOTAL", "MEDIA"}
-    _NAME_PATTERN = "^(?:(?P<ALBUMARTIST>.*?) - )?(?P<ALBUM>.*) \((?P<ORIGDATE>.*)\) \[(?P<MEDIA>.+?) ?- ?FLAC(?: ?- ?(?P<QUALITY>[^\]]*))?\](?: \{(?P<OTHERINFO>.*)\})?$"
+    REQUIRED_TAGS = {"ALBUM", "DATE", "ORIGINALDATE", "ALBUMARTIST", "DISCTOTAL", "MEDIA"}
+    _NAME_PATTERN = "^(?:(?P<ALBUMARTIST>.*?) - )?(?P<ALBUM>.*) \((?P<ORIGINALDATE>.*)\) \[(?P<MEDIA>.+?) ?- ?FLAC(?: ?- ?(?P<QUALITY>[^\]]*))?\](?: \{(?P<OTHERINFO>.*)\})?$"
 
     def __init__(self, directory, config):
         super().__init__()
