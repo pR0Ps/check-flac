@@ -60,6 +60,14 @@ import sys
 
 import taglib
 
+try:
+    # Python < 3.7
+    re_pattern = re._pattern_type
+except AttributeError:
+    # Python 3.7+
+    re_pattern = re.Pattern
+
+
 MAX_PATH_LENGTH = 180
 COVER_REGEX = re.compile("cover\.(jpe?g|png|gif)")
 DATE_TAGS = set(["DATE", "ORIGINALDATE"])
@@ -288,7 +296,7 @@ class ValidatorBase(object):
     def process_tagmap(self, tagname):
         """Handles the mappings of bad -> good tags"""
         for bad, good in TAG_MAP.items():
-            regex = isinstance(bad, re._pattern_type)
+            regex = isinstance(bad, re_pattern)
             if regex and not bad.fullmatch(tagname):
                 continue
             elif not regex and bad != tagname:
